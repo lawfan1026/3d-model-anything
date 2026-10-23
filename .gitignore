@@ -15,3 +15,11 @@ data/scans/
 apps/house-capture/release/screenshots/
 
 HouseCapture.xcodeproj/
+data/object-captures/
+data/object-synthetic/
+apps/object-capture-android/.gradle/
+apps/object-capture-android/.kotlin/
+apps/object-capture-android/local.properties
+*.apk
+*.aab
+.venv/
