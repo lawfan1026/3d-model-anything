@@ -38,3 +38,15 @@ Local completion requires an installable debug APK, loss-aware ZIP contract test
 ## Source and isolation
 
 Base repository is `wesbos/3d-model-anything`, commit `31b2dc9`. Task branch is `codex/pixel8-object-scan`. Preserve upstream app and example assets. Reusable upstream code is MIT licensed. Its example textures have separate asset terms.
+
+## First Pixel hardware run, 2026-10-23
+
+- [x] Install and launch on the owner's Pixel 8 running Android 17.
+- [x] Transfer and validate the actual native ZIP: 21 original 4080 × 3072 JPEGs, 19 reconstruction observations and two holdouts, one camera epoch, timestamp-matched still metadata.
+- [x] Inspect the source photographs. Some frames are blurred. The owner confirms moving/turning the car, so retain this as a compatibility test instead of reconstructing it as one fixed scene.
+- [x] Version 0.1.1 waits for settled repeating focus, preserves its AF mode in still capture and records both results. The three-photo Pixel check still reports final scanning metadata, so this is insufficient by itself.
+- [x] Build and install version 0.1.2 with explicit START/confirmed-lock/JPEG/CANCEL handling; 23 unit tests pass. Independent source review found no P1/P2 findings.
+- [ ] Verify version 0.1.2's locked focus and actual saved fine detail on the Pixel.
+- [ ] Capture a complete stationary-car set with independent physical dimensions and inspect reconstruction fidelity.
+
+All 21 first-run still results report passive AF scanning. The old metadata cannot prove a mode-switch cause. The subsequent three-shot 0.1.1 check used matching repeating/still modes and still reported scanning in final results. Version 0.1.2 explicitly locks focus without replacing ARCore's repeating request. The phone test must check command evidence, final still metadata and full-resolution fine detail before a full recapture.

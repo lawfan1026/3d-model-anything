@@ -45,6 +45,8 @@ Required keys:
 
 Optional `sensor` records active-array coordinates, crop rectangle, distortion, physical camera ID, sensor orientation, and timestamp source. `controls` records actual capture results such as exposure time, ISO, focus distance, AWB/AE states and gains. Requested settings are separate from actual settings. `quality` records measured sharpness, clipping, motion, and tracking state when available. Missing quality data is not a pass.
 
+Android 0.1.1 and later also record `quality.repeatingFocusAtTrigger` and `quality.repeatingFocusBeforeStill`, including the preview AF mode/state, lens state and focus-distance settling evidence. Sensor timestamps and host elapsed-realtime callback timestamps are separate fields; do not subtract them as though they share a time origin. Android 0.1.2 adds `quality.focusLock` with separate START, confirmed-lock and CANCEL evidence. Command results do not replace the final JPEG's timestamp-matched `controls`. `requestedControls` records the JPEG request, including AF mode/trigger, control mode and capture intent. `quality.focusStatus` and optional `focusWarning` report metadata checks; they do not certify visible sharpness or object detail. A warning preserves the original JPEG for review.
+
 ## Reconstruction result and scale
 
 The original ZIP and imported originals remain immutable. Each reconstruction uses a new run directory. The result records registered images, skipped/held-out images, command logs, camera calibration, mesh, texture, warnings, and engine version. A failed command must not produce a success state.

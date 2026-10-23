@@ -10,12 +10,13 @@ Double-click `Start-PixelReplica.cmd` on the laptop. The local review page opens
 
 ## Photograph the car
 
-1. Put the car on a stable surface in diffuse, consistent light. Include a ruler or measured reference. Keep a separate physical measurement for a later check.
-2. Start a capture and name the object. Keep the car still while you move the phone.
-3. Start with roughly 60–100 overlapping views around the car at low, middle and high angles. Pause briefly for sharp frames. Take close views of studs, lettering, wheels and graphics. Review the actual saved resolution. More photos do not compensate for glare, blur or missing views.
-4. Turn on **Holdout photo** for separate validation views. These photographs stay out of geometry reconstruction and texture generation.
-5. If you turn the car over, start a new object pass. The laptop processes one pass at a time. Automatic alignment of different object orientations is not implemented, so this version does not yet produce a single complete top-and-underside model.
-6. Save the capture. Add physical measurements in millimetres. These notes do not establish model scale until you identify matching endpoints on the mesh.
+1. Put the car on a stable matte surface in diffuse, consistent light, with room to walk around it. Include a ruler or measured reference. Keep a separate physical measurement for a later check.
+2. Complete a short three-photo focus check first. Keep the car fixed, use manual capture and inspect saved fine detail. A focus warning means review and retake the view; a successful save does not establish sharpness. Version 0.1.2 waits for settled preview evidence, locks focus for the JPEG and releases it for the next view.
+3. Unplug USB before the full scan. Start a new capture and name the object. Keep the car and its wheels still while you move the phone. Do not use a turntable in this version.
+4. Start with roughly 60–100 overlapping views around the car at low, middle and high angles. Pause briefly for sharp frames. Take close views of studs, lettering, wheels and graphics while keeping overlapping geometry in view. Review the actual saved resolution. More photos do not compensate for glare, blur or missing views.
+5. Turn on **Holdout photo** for separate validation views. These photographs stay out of geometry reconstruction and texture generation.
+6. If you turn the car over, start a new object pass. The laptop processes one pass at a time. Automatic alignment of different object orientations is not implemented, so this version does not yet produce a single complete top-and-underside model.
+7. Save the capture. Add physical measurements in millimetres, with exact endpoints and measurement uncertainty. These notes do not establish model scale until you identify matching endpoints on the mesh.
 
 Glossy plastic, dark surfaces, transparent parts and repeated studs can cause missing or incorrect reconstruction. The app's tracking and sharpness indicators are capture feedback. They do not certify complete surface coverage.
 

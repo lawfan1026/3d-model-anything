@@ -23,7 +23,7 @@ Alternatively, copy the APK to the phone, open it in Files and allow installatio
 1. Use bright diffuse light and a fixed background with visible texture. Keep the car stationary. Keep digital zoom at 1×. Avoid flash. A neutral colour card and measured ruler help the later evidence check.
 2. Enter a name, then choose **Start new capture**. Grant camera permission and accept Google Play Services for AR installation/update if requested.
 3. Read the saved-stream resolution in the viewfinder. Normal capture uses original Camera2 JPEGs, with the largest supported configuration attempted up to 16 MP. **CPU FALLBACK** is explicitly lower-resolution. It is useful for a compatibility test, not proof of fine-detail fidelity.
-4. Fill the blue framing guide with the car while retaining some surrounding background. Move the phone around the car in low, middle and high overlapping passes. Stop briefly for each **Capture**. The guide is not an object mask or coverage map.
+4. Fill the blue framing guide with the car while retaining some surrounding background. Move the phone around the car in low, middle and high overlapping passes. Stop briefly for each **Capture**. Version 0.1.2 waits for fresh focused metadata, sends one same-mode autofocus START, and waits for a confirmed stationary `FOCUSED_LOCKED` result before the JPEG. **Waiting for focus… hold still** and **Locking focus… hold still** are pending checks, not saved photos. The overall capture deadline is eight seconds. A timeout gives hold-still/step-back guidance. The guide is not an object mask or coverage map.
 5. **Auto when steady** is optional. It requires tracking, several steady frames, usable preview sharpness/clipping and at least 2.5 seconds between attempts. It does not certify photo quality. Manual capture preserves difficult observations with explicit evidence.
 6. After metering warms up, **Request fixed still white balance** attempts to reuse metered gains and colour transformation. This is a request. Actual returned AE/AWB state is saved; the UI does not claim a confirmed lock. Diffuse lighting and a colour reference remain necessary.
 7. Select **Holdout photo** for a few comparison views. These photos are excluded from reconstruction. Auto capture pauses for holdout selection so deliberate check views stay separate.
@@ -39,6 +39,16 @@ Alternatively, copy the APK to the phone, open it in Files and allow installatio
 The laptop reconstructs the mesh and textures using photogrammetry. The LLM controls tools and reviews source/model comparisons and warnings. An LLM is not the geometric reconstruction engine.
 
 Each export is an immutable snapshot. Its UUID is derived from the source payload hashes: unchanged exports reuse an ID; additional photos or measurements create a new one. The export manifest retains the original phone session UUID in `sourceSessionId`. Earlier snapshots remain unchanged.
+
+## Real-phone focus check for 0.1.2
+
+Keep the car and phone stationary for the first three photos. Leave **Auto when steady** and white-balance freeze off. Wait for each saved count. Inspect lettering, studs and tyre edges in the full-resolution images before taking more views. Then move only the phone to two overlapping viewpoints and repeat. Do not rotate the car.
+
+The exported `quality.repeatingFocusAtTrigger` and `quality.repeatingFocusBeforeStill` record the observed repeating AF mode/state, lens state, focus distance, sensor timestamp and callback-arrival monotonic timestamp. `requestedControls.afMode` must match the observed mode; `controls.afMode`, `afState` and `lensState` report the actual still result. Timing gates use `elapsedRealtimeNanos` consistently and preserve sensor time separately.
+
+`quality.focusLock` records the separate START result, confirmed lock result, CANCEL result/status and command timing. A lock must be from the START frame or later, with AF state 4 and lens state 0, before one JPEG is authorized. The still uses the same AF mode and an idle trigger. CANCEL is dispatched once after a started transaction completes, fails or times out; a fast next capture is blocked until cleanup completes and new focus evidence arrives. ARCore keeps ownership of repeating requests. Actual/requested capture intent and control mode are recorded to help diagnose any remaining differences between preview and still processing.
+
+If focus changes, is scanning/unfocused, or has missing final evidence, the original JPEG is preserved with `quality.focusStatus: warning` and `quality.focusWarning`; the app asks for a retake. Such a photo is not established as sharp. Check those warnings before using a capture for reconstruction. A metadata pass also does not establish that autofocus selected the intended object or that every detail is sharp.
 
 ## Build and local checks
 
@@ -58,7 +68,7 @@ Unit tests exercise timestamp/epoch separation, tracking loss, quality/state gat
 
 ## Limits and physical verification still required
 
-- No Pixel 8 is attached in the development environment. Compilation and unit tests do not prove JPEG+ARCore stream compatibility, autofocus, colour controls or fine-detail capture on the real phone.
+- Version 0.1.0 produced 21 original 4080 × 3072 JPEGs with timestamp-matched metadata on a real Pixel 8 running Android 17/API 37. Some were blurred and the car was moved. Version 0.1.1 then produced three stills with focused preview metadata but final still AF state `PASSIVE_SCAN`; one looked reasonably sharp. The exact cause remains unproven. Version 0.1.2's explicit focus lock needs a real-phone check. Compilation and unit tests do not prove autofocus, colour controls or fine-detail accuracy.
 - JPEG images are paired to still results by sensor timestamp, not callback arrival. Poses are exact or nearest within 40 ms, otherwise explicitly unavailable. Nearest poses are evidence, not calibrated ground truth.
 - JPEG and ARCore CPU frames can differ in crop/aspect/calibration. JPEG image intrinsics remain `unavailable`; CPU intrinsics and sensor calibration/crop are retained separately. Laptop photogrammetry estimates/refines the JPEG cameras. The app never scales CPU intrinsics and labels that exact JPEG calibration.
 - Preview sharpness measures the centre 70 percent of the CPU frame; it does not prove all full-resolution details are sharp. No object segmentation, automatic surface coverage, raw depth or on-phone reconstruction is implemented in this slice.

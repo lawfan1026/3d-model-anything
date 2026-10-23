@@ -80,7 +80,7 @@ public final class MainActivity extends ComponentActivity {
         button(body, "Start new capture", () -> {
             try {
                 JSONObject device = new JSONObject().put("manufacturer",Build.MANUFACTURER).put("model",Build.MODEL)
-                        .put("android",Build.VERSION.RELEASE).put("sdk",Build.VERSION.SDK_INT).put("appVersion","0.1.0");
+                        .put("android",Build.VERSION.RELEASE).put("sdk",Build.VERSION.SDK_INT).put("appVersion","0.1.2");
                 store = ScanStore.create(new File(getFilesDir(),"sessions"),name.getText().toString(),device);
                 capture(fallback.isChecked());
             } catch (Exception e) { error("Cannot create session",e); }
