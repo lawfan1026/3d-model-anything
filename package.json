@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --config apps/room-viewer/vite.config.ts",
-    "build": "tsc && vite build --config apps/room-viewer/vite.config.ts",
+    "build": "tsc && vite build --config apps/room-viewer/vite.config.ts && vite build --config apps/object-review/vite.config.ts",
+    "dev:objects": "vite --config apps/object-review/vite.config.ts",
+    "build:objects": "tsc && vite build --config apps/object-review/vite.config.ts",
+    "preview:objects": "vite preview --config apps/object-review/vite.config.ts --host 127.0.0.1 --port 5189",
     "preview": "vite preview --config apps/room-viewer/vite.config.ts",
     "textures": "python3 .agents/skills/scan-to-threejs/scripts/fetch_textures.py"
   },

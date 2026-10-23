@@ -18,6 +18,7 @@
   },
   "include": [
     "apps/room-viewer/src",
+    "apps/object-review/src",
     "apps/room-viewer/tools",
     "demos",
     "packages"
