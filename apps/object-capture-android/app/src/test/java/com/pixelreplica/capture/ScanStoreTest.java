@@ -75,4 +75,20 @@ public final class ScanStoreTest {
             assertEquals(64,snapshot.getString("snapshotPayloadSha256").length());
         }
     }
+    @Test public void objectPassSurvivesCameraRestartsAndOnlyAdvancesAfterPhotos() throws Exception {
+        File sessions=temporary.newFolder("sessions");
+        ScanStore store=ScanStore.create(sessions,"car",new JSONObject());
+        assertEquals("pass-1",store.objectPass());
+        assertEquals("an empty pass is reused","pass-1",store.startNewPass());
+        store.commit(original,observation("world-a","reconstruct").put("objectPass",store.objectPass()));
+        store.commit(original,observation("world-b","reconstruct").put("objectPass",store.objectPass()));
+        assertEquals("pass-2",store.startNewPass());
+        assertEquals("pass-2",ScanStore.open(store.directory).objectPass());
+        store.commit(original,observation("world-c","reconstruct").put("objectPass","pass-2"));
+        assertEquals("pass-3",ScanStore.open(store.directory).startNewPass());
+        try {store.commit(original,observation("world-c","reconstruct").put("objectPass"," ")); fail();} catch(IllegalArgumentException expected){}
+        JSONObject legacy=ScanStore.readObject(new File(store.directory,"manifest.json")); legacy.remove("currentObjectPass");
+        ScanStore.atomicJson(new File(store.directory,"manifest.json"),legacy);
+        assertEquals("sessions from 0.1.x default to the first pass","pass-1",ScanStore.open(store.directory).objectPass());
+    }
 }

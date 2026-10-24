@@ -322,6 +322,78 @@ class CaptureTests(unittest.TestCase):
             thread.join()
 
 
+    def test_camera_restart_inside_one_object_pass_reconstructs_together(self):
+        def restart(observations):
+            for index, observation in enumerate(observations):
+                observation.update(epoch=f"world-{index % 2}", objectPass="pass-1")
+        self.mutate_observation(restart)
+        self.import_fixture()
+        run = replica.ReplicaStore(self.store).prepare_run(self.project_id)
+        self.assertEqual(run["epoch"], "pass-1")
+        self.assertEqual(run["photoCount"], 4)
+
+    def test_moved_object_passes_still_require_selection(self):
+        self.mutate_observation(lambda obs: [o.update(objectPass="pass-2" if i == 0 else "pass-1") for i, o in enumerate(obs)])
+        self.import_fixture()
+        store = replica.ReplicaStore(self.store)
+        with self.assertRaisesRegex(replica.ReplicaError, "exactly one object pass"):
+            store.prepare_run(self.project_id)
+        self.assertEqual(store.prepare_run(self.project_id, {"epoch": "pass-1"})["photoCount"], 3)
+        with self.assertRaisesRegex(replica.ReplicaError, "At least three"):
+            store.prepare_run(self.project_id, {"epoch": "pass-2"})
+
+    def test_blank_object_pass_rejected(self):
+        self.mutate_observation(lambda obs: obs[0].update(objectPass=""))
+        with self.assertRaisesRegex(replica.ReplicaError, "object pass"):
+            self.import_fixture()
+
+    def test_phone_tracking_scale_estimate_good_poor_and_unavailable(self):
+        rng = np.random.default_rng(7)
+        def world(model_centres, metres_per_unit, noise_m):
+            q, _ = np.linalg.qr(rng.normal(size=(3, 3)))
+            rotation = q * np.sign(np.linalg.det(q))
+            return model_centres @ rotation.T * metres_per_unit + rng.normal(size=3) + rng.normal(scale=noise_m, size=model_centres.shape)
+        angles = np.linspace(0, 2 * np.pi, 12, endpoint=False)
+        model = np.stack([np.cos(angles), 0.3 * np.sin(3 * angles), np.sin(angles)], axis=1) * 2.5   # arbitrary COLMAP units
+        def capture(phone_centres, epochs):
+            photos = [{"id": str(i), "epoch": epochs[i], "poseStatus": "matched", "cameraToWorld": [1,0,0,0, 0,1,0,0, 0,0,1,0, *c, 1]}
+                      for i, c in enumerate(phone_centres.tolist())]
+            cameras = [{"photoId": str(i), "cameraToWorld": [1,0,0,0, 0,1,0,0, 0,0,1,0, *c, 1]} for i, c in enumerate(model.tolist())]
+            return photos, cameras
+        # 2.5 model units ~ 0.3 m orbit radius: 0.12 m per unit, 1 mm tracking noise, split over two tracking worlds.
+        phone = np.vstack([world(model[:6], 0.12, 0.001), world(model[6:], 0.12, 0.001)])
+        estimate = replica.phone_scale(*capture(phone, ["a"] * 6 + ["b"] * 6))
+        self.assertEqual(estimate["status"], "good")
+        self.assertEqual(estimate["trackingWorlds"], 2)
+        self.assertAlmostEqual(estimate["metersPerUnit"], 0.12, delta=0.12 * 0.02)
+        disagreeing = np.vstack([world(model[:6], 0.12, 0.001), world(model[6:], 0.10, 0.001)])
+        self.assertEqual(replica.phone_scale(*capture(disagreeing, ["a"] * 6 + ["b"] * 6))["status"], "poor")
+        barely_moved = world(model, 0.004, 0.0001)
+        self.assertEqual(replica.phone_scale(*capture(barely_moved, ["a"] * 12))["status"], "unavailable")
+        photos, cameras = capture(phone, ["a"] * 12)
+        for photo in photos:
+            photo.update(poseStatus="unavailable", cameraToWorld=None)
+        self.assertEqual(replica.phone_scale(photos, cameras)["status"], "unavailable")
+
+    def test_ruler_scale_overrides_phone_estimate_and_checks_use_phone_estimate(self):
+        self.import_fixture()
+        store = replica.ReplicaStore(self.store)
+        run = store.prepare_run(self.project_id)
+        run.update(status="succeeded", phoneScale={"status": "good", "metersPerUnit": 0.05, "rmsResidualMm": 0.8})
+        replica.write_json(self.store / self.project_id / "runs" / run["id"] / "result.json", run)
+        project = replica.get_project(self.store, self.project_id)
+        self.assertEqual(project["scale"]["status"], "phone-estimate")
+        checked = store.add_measurement(self.project_id, {"label": "length", "valueMm": 99, "role": "check", "a": [0,0,0], "b": [2,0,0]})
+        self.assertAlmostEqual(checked["measurements"][-1]["residualMm"], 1)
+        ruled = store.add_measurement(self.project_id, {"label": "ruler", "valueMm": 104, "role": "scale", "a": [0,0,0], "b": [2,0,0]})
+        self.assertEqual(ruled["scale"]["status"], "measured")
+        self.assertAlmostEqual(ruled["scale"]["metersPerUnit"], 0.052)
+        run["phoneScale"]["status"] = "poor"
+        replica.write_json(self.store / self.project_id / "runs" / run["id"] / "result.json", run)
+        (self.store / self.project_id / "annotations.json").unlink()
+        self.assertEqual(replica.get_project(self.store, self.project_id)["scale"]["status"], "unscaled")
+
+
 class CameraTests(unittest.TestCase):
     def test_atomic_json_write_uses_a_short_name_at_a_long_windows_path(self):
         with tempfile.TemporaryDirectory() as directory:

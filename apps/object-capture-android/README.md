@@ -4,31 +4,29 @@ A native Java/Views Android app based on Wes Bos's linked-photo, camera-pose and
 
 ## Install on Pixel 8
 
-The debug APK is generated at `app/build/outputs/apk/debug/app-debug.apk`.
+The easiest path is the phone itself: see [docs/pixel-phone-testing.md](../../docs/pixel-phone-testing.md). GitHub Actions (`.github/workflows/android.yml`) builds every change and publishes `PixelReplica.apk` on the `pixel-replica-latest` release.
 
-1. On the phone, open **Settings → About phone** and tap **Build number** seven times. Enable **USB debugging** in **Settings → System → Developer options**.
-2. Connect the phone to the Windows laptop with a data-capable USB cable. Accept the phone's debugging prompt.
-3. In PowerShell, run:
+All builds are signed with the committed `debug.keystore` (password `android`), so APKs from GitHub, a cloud session or the laptop install over each other. It is a public test key; use a private key before distributing the app to anyone else. Version 0.1.x was signed with a laptop-local debug key and must be uninstalled once before installing 0.2.0.
+
+From a computer with USB debugging enabled:
 
 ```powershell
-& "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe" devices
 & "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe" install -r '.\app\build\outputs\apk\debug\app-debug.apk'
-& "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe" shell am start -n com.pixelreplica.capture/.MainActivity
 ```
 
-Alternatively, copy the APK to the phone, open it in Files and allow installation from that source. This is a development build, not a Play Store release.
+## Guided capture (0.2.0)
 
-## First LEGO capture
+1. Use bright diffuse light and a matte, textured surface under the object. Keep the object stationary and the zoom at 1×.
+2. **Start scanning**. Grant camera permission and install Google Play Services for AR if asked. Move the phone slowly until tracking starts.
+3. Walk around the object keeping it in the centre circle. **Auto capture** (on by default) takes a photo whenever the camera reaches a viewpoint the coverage dial still needs and holds steady briefly. Each photo uses 0.1.2's confirmed focus lock and full-resolution Camera2 JPEG.
+4. The dial is the capture dome seen from above: outer ring low views (pitch −25° to 22°, 24 sectors), then middle (22°–47°, 24), top (47°–78°, 12) and the overhead centre. It turns with the camera so the current view is at the bottom; green is captured, yellow is the current sector. The banner says which lap to do next.
+5. Coverage comes from the camera's viewing direction in ARCore's gravity-aligned world (`OrbitCoverage`). A new photo also needs 8° of separation from every earlier photo and 2 cm of camera movement, so turning the phone in place adds nothing.
+6. If the camera restarts (screen off, app switch), the dial starts over because headings from different ARCore worlds cannot be compared. Photos are kept and stay in the same object pass.
+7. **New pass** after moving or turning over the object. The pass is recorded as `objectPass`; the laptop reconstructs one pass at a time.
+8. **Holdout photo** reserves check views; auto capture pauses while it is on. **Lock colour** requests fixed still white balance.
+9. **Done** opens the review: thumbnails, physical measurements, ZIP export, and deleting a scan from the phone.
 
-1. Use bright diffuse light and a fixed background with visible texture. Keep the car stationary. Keep digital zoom at 1×. Avoid flash. A neutral colour card and measured ruler help the later evidence check.
-2. Enter a name, then choose **Start new capture**. Grant camera permission and accept Google Play Services for AR installation/update if requested.
-3. Read the saved-stream resolution in the viewfinder. Normal capture uses original Camera2 JPEGs, with the largest supported configuration attempted up to 16 MP. **CPU FALLBACK** is explicitly lower-resolution. It is useful for a compatibility test, not proof of fine-detail fidelity.
-4. Fill the blue framing guide with the car while retaining some surrounding background. Move the phone around the car in low, middle and high overlapping passes. Stop briefly for each **Capture**. Version 0.1.2 waits for fresh focused metadata, sends one same-mode autofocus START, and waits for a confirmed stationary `FOCUSED_LOCKED` result before the JPEG. **Waiting for focus… hold still** and **Locking focus… hold still** are pending checks, not saved photos. The overall capture deadline is eight seconds. A timeout gives hold-still/step-back guidance. The guide is not an object mask or coverage map.
-5. **Auto when steady** is optional. It requires tracking, several steady frames, usable preview sharpness/clipping and at least 2.5 seconds between attempts. It does not certify photo quality. Manual capture preserves difficult observations with explicit evidence.
-6. After metering warms up, **Request fixed still white balance** attempts to reuse metered gains and colour transformation. This is a request. Actual returned AE/AWB state is saved; the UI does not claim a confirmed lock. Diffuse lighting and a colour reference remain necessary.
-7. Select **Holdout photo** for a few comparison views. These photos are excluded from reconstruction. Auto capture pauses for holdout selection so deliberate check views stay separate.
-8. Use **New pass** after turning over or moving the car. Separate passes have independent coordinate epochs and must be aligned on the laptop. Do not use an object turntable within one epoch.
-9. Choose **Review**, inspect the latest thumbnails/full photos, and add physical measurements in millimetres. Use one `scale` measurement and independent `check` measurements, with realistic uncertainty. The laptop must associate each measurement with matching model points.
+The Pixel 8 reports `PASSIVE_SCAN` in final still metadata even after a confirmed lock with a stationary lens at an unchanged distance (see Limits). The warning is still recorded in `quality.focusWarning`, but the capture screen only flags a photo as possibly soft when the lens moved or refocused.
 
 ## Transfer to the laptop
 
@@ -40,7 +38,7 @@ The laptop reconstructs the mesh and textures using photogrammetry. The LLM cont
 
 Each export is an immutable snapshot. Its UUID is derived from the source payload hashes: unchanged exports reuse an ID; additional photos or measurements create a new one. The export manifest retains the original phone session UUID in `sourceSessionId`. Earlier snapshots remain unchanged.
 
-## Real-phone focus check for 0.1.2
+## Focus check notes from 0.1.2 (historical)
 
 Keep the car and phone stationary for the first three photos. Leave **Auto when steady** and white-balance freeze off. Wait for each saved count. Inspect lettering, studs and tyre edges in the full-resolution images before taking more views. Then move only the phone to two overlapping viewpoints and repeat. Do not rotate the car.
 
@@ -52,7 +50,7 @@ If focus changes, is scanning/unfocused, or has missing final evidence, the orig
 
 ## Build and local checks
 
-Requires JDK 17, Android SDK platform 36, and network access for initial Gradle dependencies. The project pins Android Gradle Plugin 9.0.1, Gradle 9.3.1 and ARCore 1.48.0. It targets API 36 and supports API 29 and above.
+CI runs `./gradlew assembleDebug testDebugUnitTest` and a report-only `lintDebug`. Locally this requires JDK 17, Android SDK platform 36, and network access for initial Gradle dependencies. The project pins Android Gradle Plugin 9.0.1, Gradle 9.3.1 and ARCore 1.48.0. It targets API 36 and supports API 29 and above.
 
 ```powershell
 # The helper uses an isolated copy of trusted Windows roots for certificate validation.

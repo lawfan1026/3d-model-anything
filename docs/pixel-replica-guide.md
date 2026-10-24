@@ -10,6 +10,8 @@ Double-click `Start-PixelReplica.cmd` on the laptop. The local review page opens
 
 ## Photograph the car
 
+Android 0.2.0 replaces the manual steps below with guided capture: a coverage dial and automatic photos as you walk around. Follow [docs/pixel-phone-testing.md](pixel-phone-testing.md) for the current phone flow; the lighting and setup advice here still applies.
+
 1. Put the car on a stable matte surface in diffuse, consistent light, with room to walk around it. Include a ruler or measured reference. Keep a separate physical measurement for a later check.
 2. Complete a short three-photo focus check first. Keep the car fixed, use manual capture and inspect saved fine detail. A focus warning requires review; retake visibly soft views. A successful save does not establish sharpness. The tested Pixel reports scanning in final metadata even after confirmed lock and without a reported focus-distance change. Retain that uncertainty without treating the flag alone as proof of blur. Version 0.1.2 waits for settled preview evidence, requests confirmed focus lock before the JPEG and releases it afterward.
 3. Unplug USB before the full scan. Start a new capture and name the object. Keep the car and its wheels still while you move the phone. Do not use a turntable in this version.

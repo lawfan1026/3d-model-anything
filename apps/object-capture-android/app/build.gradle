@@ -7,10 +7,21 @@ android {
         applicationId 'com.pixelreplica.capture'
         minSdk 29
         targetSdk 36
-        versionCode 3
-        versionName '0.1.2'
+        versionCode 4
+        versionName '0.2.0'
         testInstrumentationRunner 'android.test.InstrumentationTestRunner'
     }
+    // One shared test key, so APKs from GitHub Actions, the cloud and the laptop all update each other.
+    // It is a public debug key: use a private key for anything distributed beyond your own phone.
+    signingConfigs {
+        debug {
+            storeFile rootProject.file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+    buildTypes { debug { signingConfig signingConfigs.debug } }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
 }
 

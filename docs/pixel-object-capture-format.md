@@ -13,6 +13,8 @@ This adapter extends Wes Bos's capture-and-compare approach for individual objec
 
 Android exports are immutable snapshots. The snapshot `id` is derived from the source payload hashes. An unchanged export keeps its ID; changed photos or measurements create a new one. `sourceSessionId` retains the phone session UUID. A different ZIP container with the same verified payload is an idempotent import. Changed payload under an existing snapshot ID must never replace its originals.
 
+Android 0.2.0 and later add `objectPass` to every observation (`pass-1`, `pass-2`, …) and `currentObjectPass` to the manifest. An object pass is one unmoved placement of the object; it changes only when the person taps **New pass** after moving or turning the object over. It does not change when the camera restarts, so photogrammetry reconstructs one object pass even if it spans several tracking epochs. Readers fall back to `epoch` when `objectPass` is absent.
+
 Manifest coordinate system is `{units:"meters", cameraToWorld:"column-major-4x4", cameraAxes:"+X right,+Y up,-Z forward", worldAxes:"right-handed,+Y up"}`. The camera matrix uses the physical ARCore camera, never display-oriented pose. Every observation has an `epoch` string. A restarted tracking world or reoriented object starts a new epoch. Do not combine different epochs as one measured world.
 
 ## Observation
@@ -51,6 +53,6 @@ Android 0.1.1 and later also record `quality.repeatingFocusAtTrigger` and `quali
 
 The original ZIP and imported originals remain immutable. Each reconstruction uses a new run directory. The result records registered images, skipped/held-out images, command logs, camera calibration, mesh, texture, warnings, and engine version. A failed command must not produce a success state.
 
-Initial photogrammetry coordinates have unknown scale. Metric status starts `unscaled`. A measured distance between two selected mesh points establishes a scale factor. Independent `check` measurements report residual errors without changing scale. An ARCore trajectory fit, if added, is approximate until independently checked.
+Initial photogrammetry coordinates have unknown scale. Metric status starts `unscaled`. After mapping, the laptop fits a similarity transform between recovered camera centres and ARCore camera centres, separately for each tracking epoch, and stores `run.phoneScale`. A `good` fit (residual under 10% of camera spread, epochs agreeing within 5%) gives scale status `phone-estimate`; this is an estimate with typical error of a few percent. A measured distance between two selected mesh points establishes a scale factor. Independent `check` measurements report residual errors without changing scale. An ARCore trajectory fit, if added, is approximate until independently checked.
 
 Colour matching from uncontrolled photographs is not colour calibration. Smoothing, inferred surfaces and hole filling must be recorded. No result is described as perfect or physically verified from software checks alone.

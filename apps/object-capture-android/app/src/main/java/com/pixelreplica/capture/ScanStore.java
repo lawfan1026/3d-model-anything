@@ -32,6 +32,7 @@ public final class ScanStore {
         JSONObject manifest = new JSONObject().put("format", "pixel-object-capture/1")
                 .put("id", id).put("name", name.trim()).put("createdAt", Instant.now().toString())
                 .put("device", device).put("status", "interrupted").put("coordinateSystem", coordinates)
+                .put("currentObjectPass", "pass-1")
                 .put("notes", "Photogrammetry evidence; size, colour and fine-detail fidelity require independent checks.");
         ScanStore store = new ScanStore(directory, manifest, new JSONArray(), new JSONArray());
         store.persist(); return store;
@@ -53,6 +54,31 @@ public final class ScanStore {
     public synchronized JSONArray photos() throws JSONException { return new JSONArray(photos.toString()); }
     public synchronized JSONArray measurements() throws JSONException { return new JSONArray(measurements.toString()); }
     public synchronized String status() { return manifest.optString("status"); }
+
+    /** The object placement new photos belong to. Unlike epoch, it survives camera restarts. */
+    public synchronized String objectPass() { return manifest.optString("currentObjectPass", "pass-1"); }
+
+    /** Starts a pass after the object is moved or turned over; an empty current pass is reused. */
+    public synchronized String startNewPass() throws Exception {
+        String current = objectPass();
+        int highest = passNumber(current);
+        boolean currentHasPhotos = false;
+        for (int i = 0; i < photos.length(); i++) {
+            String pass = photos.getJSONObject(i).optString("objectPass", "");
+            highest = Math.max(highest, passNumber(pass));
+            currentHasPhotos |= pass.equals(current);
+        }
+        if (!currentHasPhotos) return current;
+        String next = "pass-" + (highest + 1);
+        manifest.put("currentObjectPass", next);
+        atomicJson(new File(directory, "manifest.json"), manifest);
+        return next;
+    }
+
+    private static int passNumber(String pass) {
+        try { return pass.startsWith("pass-") ? Integer.parseInt(pass.substring(5)) : 0; }
+        catch (NumberFormatException notNumbered) { return 0; }
+    }
 
     public synchronized String commit(byte[] jpeg, JSONObject observation) throws Exception {
         if (jpeg.length < 4 || (jpeg[0] & 255) != 255 || (jpeg[1] & 255) != 216)
@@ -131,6 +157,7 @@ public final class ScanStore {
         if (o.getString("epoch").trim().isEmpty() || Long.parseLong(o.getString("timestampNs")) <= 0
                 || o.getInt("width") <= 0 || o.getInt("height") <= 0) throw new IllegalArgumentException("Invalid observation");
         if (!Arrays.asList("reconstruct", "holdout").contains(o.getString("role"))) throw new IllegalArgumentException("Invalid role");
+        if (o.has("objectPass") && o.getString("objectPass").trim().isEmpty()) throw new IllegalArgumentException("Invalid object pass");
         if (!Arrays.asList("matched", "nearest", "unavailable").contains(o.getString("poseStatus"))) throw new IllegalArgumentException("Invalid pose status");
         if (!o.isNull("cameraToWorld")) {
             JSONArray matrix = o.getJSONArray("cameraToWorld");

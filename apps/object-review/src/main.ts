@@ -6,10 +6,10 @@ import './style.css';
 
 type Intrinsics = { fx: number; fy: number; cx: number; cy: number };
 type RecoveredCamera = { photoId: string; width: number; height: number; intrinsics: Intrinsics; cameraToWorld: number[]; photoUrl?: string };
-type Photo = { id: string; file: string; url: string; epoch: string; width: number; height: number; role: string; registeredCamera?: RecoveredCamera };
+type Photo = { id: string; file: string; url: string; epoch: string; objectPass?: string; width: number; height: number; role: string; registeredCamera?: RecoveredCamera };
 type Run = { id: string; status: string; stage?: string; error?: string; registeredCount?: number; photoCount?: number; model?: { meshUrl: string; textureUrl?: string }; cameras?: RecoveredCamera[]; warnings?: string[] };
 type Measurement = { id: string; label: string; role: string; valueMm: number; runId?: string; predictedMm?: number; residualMm?: number };
-type Project = { id: string; name: string; manifest: { notes?: string; device?: unknown }; photos: Photo[]; physicalMeasurements: Measurement[]; measurements: Measurement[]; latestRun?: Run; scale: { status: string; metersPerUnit: number | null }; warnings?: string[] };
+type Project = { id: string; name: string; manifest: { notes?: string; device?: unknown }; photos: Photo[]; physicalMeasurements: Measurement[]; measurements: Measurement[]; latestRun?: Run; scale: { status: string; metersPerUnit: number | null; rmsResidualMm?: number }; warnings?: string[] };
 type Summary = { id: string; name: string; photoCount: number };
 type EngineStatus = { colmap: { available: boolean; version?: string; errors?: string[] } };
 const app = document.querySelector<HTMLDivElement>('#app')!;
@@ -85,7 +85,8 @@ async function loadProject(id: string) {
     el('evidence-links').replaceChildren(); notice();
     el('empty').hidden = true; el('workspace').hidden = false; el('title').textContent = next.name;
     el('subtitle').textContent = 'Original capture, reconstructed surface and measurement evidence in one place.';
-    const epochs = [...new Set(next.photos.map(photo => photo.epoch))];
+    // Android 0.2+ groups photos by object placement; older captures only have the tracking epoch.
+    const epochs = [...new Set(next.photos.map(photo => photo.objectPass ?? photo.epoch))];
     const select = el<HTMLSelectElement>('epoch'); select.replaceChildren(...epochs.map(epoch => { const option = document.createElement('option'); option.value = epoch; option.textContent = epoch; return option; }));
     renderPhotos(); renderProject(); await loadModel(); await refreshLibrary();
   } finally { loadingProject = false; }
@@ -122,8 +123,10 @@ function renderProject() {
   el('run-status').classList.toggle('error', run?.status === 'failed');
   el('reconstruct-step').classList.toggle('active', !!running);
   el('check-step').classList.toggle('active', run?.status === 'succeeded');
-  const scaled = project.scale?.status === 'measured' && project.scale.metersPerUnit != null;
-  el('scale-status').textContent = scaled ? 'Scale set from a physical measurement. Add an independent check.' : 'Unscaled geometry. Set scale using measured endpoints.';
+  const scaled = (project.scale?.status === 'measured' || project.scale?.status === 'phone-estimate') && project.scale.metersPerUnit != null;
+  el('scale-status').textContent = project.scale?.status === 'measured' ? 'Scale set from a physical measurement. Add an independent check.'
+    : scaled ? `Scale estimated from the phone's motion tracking (fit error ${project.scale.rmsResidualMm?.toFixed(1) ?? '?'} mm). Check it against a ruler measurement, or set scale with one.`
+    : 'Unscaled geometry. Set scale using measured endpoints.';
   el<HTMLButtonElement>('export-glb').disabled = !mesh || !scaled || exporting;
   const list = el('measurements'); list.replaceChildren();
   for (const item of (project.measurements || []).filter(item => item.runId === run?.id)) {
@@ -263,7 +266,7 @@ el('measurement-form').onsubmit = event => { event.preventDefault(); void attemp
   if (points.length !== 2 || !project) return;
   const valueMm = Number(el<HTMLInputElement>('measure-value').value);
   const role = el<HTMLSelectElement>('measure-role').value;
-  if (role === 'check' && project.scale.status !== 'measured') throw new Error('Set scale with a measured distance before adding a size check.');
+  if (role === 'check' && project.scale.metersPerUnit == null) throw new Error('Set scale with a measured distance before adding a size check.');
   project = await api<Project>(projectPath('/measurements'), post({ label: el<HTMLInputElement>('measure-label').value, valueMm, role, a: points[0].toArray(), b: points[1].toArray(), runId: project.latestRun?.id }));
   renderProject(); notice('Measurement saved. Original capture files remain unchanged.');
 }); };

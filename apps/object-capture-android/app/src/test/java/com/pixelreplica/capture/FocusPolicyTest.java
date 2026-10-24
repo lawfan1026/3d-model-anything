@@ -68,4 +68,14 @@ public final class FocusPolicyTest {
         assertTrue(policy.readiness(1160_000_000L).ready());
         assertFalse(policy.readiness(1500_000_000L).ready());
     }
+    @Test public void pixelScanningFinalStateIsNotAlarmingWhenLensHeldLockedDistance() {
+        FocusPolicy.Sample locked=sample(1000,3,4,0,4.0f);
+        // Pixel 8 still result: PASSIVE_SCAN, stationary lens, unchanged distance (observed on the owner's phone).
+        assertTrue(FocusPolicy.lensHeld(locked,sample(1100,3,1,0,4.0f)));
+        assertNotNull("the metadata warning is still recorded",FocusPolicy.stillWarning(locked,sample(1100,3,1,0,4.0f)));
+        assertFalse("moving lens",FocusPolicy.lensHeld(locked,sample(1100,3,1,1,4.0f)));
+        assertFalse("refocused elsewhere",FocusPolicy.lensHeld(locked,sample(1100,3,1,0,2.5f)));
+        assertFalse(FocusPolicy.lensHeld(null,sample(1100,3,1,0,4.0f)));
+        assertFalse(FocusPolicy.lensHeld(locked,null));
+    }
 }

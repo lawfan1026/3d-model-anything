@@ -174,6 +174,68 @@ def validate_pose(value):
         raise ReplicaError("Camera matrix is not a finite right-handed rigid transform")
 
 
+def object_pass(photo):
+    """One unmoved object placement. Android 0.2+ keeps it across camera restarts; older captures use the tracking epoch."""
+    return photo.get("objectPass") or photo["epoch"]
+
+
+def similarity_fit(source, target):
+    """Umeyama fit of target ~ scale * R @ source + t. Returns (scale, RMS residual in target units) or None."""
+    src, dst = np.asarray(source, dtype=float), np.asarray(target, dtype=float)
+    a, b = src - src.mean(axis=0), dst - dst.mean(axis=0)
+    variance = (a ** 2).sum() / len(src)
+    if variance <= 1e-18:
+        return None
+    u, d, vt = np.linalg.svd(b.T @ a / len(src))
+    sign = np.eye(3)
+    if np.linalg.det(u) * np.linalg.det(vt) < 0:
+        sign[2, 2] = -1
+    rotation = u @ sign @ vt
+    scale = float(np.trace(np.diag(d) @ sign) / variance)
+    residual = b - scale * a @ rotation.T
+    return scale, float(np.sqrt((residual ** 2).sum(axis=1).mean()))
+
+
+def phone_scale(photos, cameras):
+    """Metres per model unit from ARCore camera centres. ARCore tracking is metric but drifts, so this is
+    an estimate: one similarity fit per tracking world, rejected when the phone barely moved or the fit is poor."""
+    by_id = {p["id"]: p for p in photos}
+    worlds = {}
+    for camera in cameras:
+        photo = by_id.get(camera["photoId"])
+        if not photo or photo.get("poseStatus") not in ("matched", "nearest") or not photo.get("cameraToWorld"):
+            continue
+        worlds.setdefault(photo["epoch"], []).append((camera["cameraToWorld"][12:15], photo["cameraToWorld"][12:15]))
+    fits = []
+    for pairs in worlds.values():
+        if len(pairs) < 4:
+            continue
+        phone = np.array([pair[1] for pair in pairs], dtype=float)
+        spread = float(np.sqrt(((phone - phone.mean(axis=0)) ** 2).sum(axis=1).mean()))
+        fit = similarity_fit([pair[0] for pair in pairs], phone) if spread >= 0.03 else None
+        if fit:
+            fits.append({"cameras": len(pairs), "metersPerUnit": fit[0], "rmsResidualMm": fit[1] * 1000, "spreadMm": spread * 1000})
+    if not fits:
+        return {"status": "unavailable", "reason": "Too few registered photos with phone poses, or the phone barely moved."}
+    count = sum(f["cameras"] for f in fits)
+    estimate = {"metersPerUnit": sum(f["cameras"] * f["metersPerUnit"] for f in fits) / count, "cameraCount": count,
+                "trackingWorlds": len(fits), "rmsResidualMm": math.sqrt(sum(f["cameras"] * f["rmsResidualMm"] ** 2 for f in fits) / count),
+                "fits": fits}
+    scales = [f["metersPerUnit"] for f in fits]
+    poor = any(f["rmsResidualMm"] > 0.1 * f["spreadMm"] for f in fits) or max(scales) > 1.05 * min(scales)
+    estimate["status"] = "poor" if poor else "good"
+    return estimate
+
+
+def effective_scale(records, run):
+    """A ruler measurement wins; otherwise a good phone-tracking estimate; otherwise unscaled."""
+    scale = measured_scale(records, run["id"])
+    phone = run.get("phoneScale") or {}
+    if scale["status"] == "unscaled" and phone.get("status") == "good":
+        return {"status": "phone-estimate", "metersPerUnit": phone["metersPerUnit"], "rmsResidualMm": phone["rmsResidualMm"]}
+    return scale
+
+
 def validate_capture(root):
     root = Path(root)
     manifest = read_json(root / "manifest.json")
@@ -219,6 +281,8 @@ def validate_capture(root):
         files.add(relative.casefold())
         if not isinstance(observation["epoch"], str) or not 1 <= len(observation["epoch"]) <= 100:
             raise ReplicaError("Photo needs a coordinate epoch")
+        if "objectPass" in observation and not (isinstance(observation["objectPass"], str) and 1 <= len(observation["objectPass"]) <= 100):
+            raise ReplicaError("Invalid object pass")
         if observation["role"] not in ("reconstruct", "holdout"):
             raise ReplicaError("Photo role must be reconstruct or holdout")
         if not isinstance(observation["timestampNs"], str) or not re.fullmatch(r"\d{1,30}", observation["timestampNs"]):
@@ -330,7 +394,7 @@ def measured_scale(records, run_id):
 
 def with_scale(run, records):
     run = dict(run)
-    scale = measured_scale(records, run["id"])
+    scale = effective_scale(records, run)
     run["scale"] = scale
     run["scaleFactor"] = scale["metersPerUnit"]
     if run.get("model"):
@@ -350,19 +414,20 @@ def get_project(store, project_id):
     latest = runs[-1] if runs else None
     cameras = {c["photoId"]: c for c in latest.get("cameras", [])} if latest else {}
     projected_records = []
+    by_run = {r["id"]: r for r in runs}
     for record in records:
         item = dict(record)
-        scale = measured_scale(records, record["runId"])
+        scale = effective_scale(records, by_run[record["runId"]]) if record["runId"] in by_run else measured_scale(records, record["runId"])
         item["status"] = scale["status"]
         item["scaleFactor"] = scale["metersPerUnit"]
         if scale["metersPerUnit"] is not None:
             item["predictedMm"] = item["meshDistance"] * scale["metersPerUnit"] * 1000
             item["residualMm"] = item["predictedMm"] - item["valueMm"]
         projected_records.append(item)
-    epochs = sorted({p["epoch"] for p in photos})
+    epochs = sorted({object_pass(p) for p in photos})
     warnings = ["Photogrammetry begins with unknown metric scale.", "Photo colour is not calibrated object colour.", "Unseen surfaces and filled mesh regions are not measured evidence."]
     if len(epochs) > 1:
-        warnings.append("Multiple coordinate epochs: select one for reconstruction; object reorientation requires separate alignment.")
+        warnings.append("Multiple object passes: reconstruct one at a time. The object was moved between passes, and aligning them is not automatic yet.")
     if manifest["status"] != "complete":
         warnings.append("Capture was interrupted; completeness has not been established.")
     return {"id": project_id, "name": manifest["name"], "manifest": manifest,
@@ -538,7 +603,7 @@ def finish_surface(project, directory, run, binary, trim=5):
     run["model"] = {"meshPath": mesh_relative, "texturePath": texture_relative,
                     "meshUrl": asset_url(project.name, mesh_relative), "textureUrl": asset_url(project.name, texture_relative)}
     run["processing"] = {"meshing": "Poisson inferred surface", "poissonDensityTrim": trim, "textureColorCorrection": False,
-                         "textureInpaintRadius": 0, "maxImageSize": run["maxImageSize"], "holdoutUsed": False, "arcorePosesUsedForGeometry": False}
+                         "textureInpaintRadius": 0, "maxImageSize": run["maxImageSize"], "holdoutUsed": False, "arcorePosesUsedForGeometry": False, "arcorePosesUsedForScaleEstimate": True}
     run["warnings"].append(f"Poisson density trim is {trim}; this numerical sampling threshold does not establish a physical detail resolution.")
     finish_validation(project, directory, run, binary)
     run.update(status="succeeded", stage="complete", updatedAt=now())
@@ -600,10 +665,10 @@ def localize_holdouts(project, run, binary):
     """Separate, geometry-frozen validation. Never put holdouts into dense reconstruction."""
     directory = project / "runs" / run["id"]
     all_photos = read_json(project / "original" / "photos" / "photos.json")
-    heldouts = [p for p in all_photos if p["role"] == "holdout" and p["epoch"] == run["epoch"]]
+    heldouts = [p for p in all_photos if p["role"] == "holdout" and object_pass(p) == run["epoch"]]
     if not heldouts:
         run["validation"] = {"status": "not-applicable", "registeredCount": 0, "heldoutCount": 0,
-                             "warning": "No holdout photographs exist in this coordinate epoch."}
+                             "warning": "No holdout photographs exist in this object pass."}
         return
     validation_id = "v-" + uuid4().hex[:8]
     validation = directory / validation_id
@@ -759,15 +824,16 @@ class ReplicaStore:
                 raise ReplicaError("This project already has a running reconstruction")
             project = get_project(self.root, project_id)
             reconstruct_photos = [p for p in project["photos"] if p["role"] == "reconstruct"]
-            epochs = sorted({p["epoch"] for p in reconstruct_photos})
+            # "epoch" selects an object pass; the option keeps its name for older clients and runs.
+            epochs = sorted({object_pass(p) for p in reconstruct_photos})
             epoch = options.get("epoch")
             if epoch is None:
                 if len(epochs) != 1:
-                    raise ReplicaError("Select exactly one coordinate epoch for reconstruction")
+                    raise ReplicaError("Select exactly one object pass for reconstruction")
                 epoch = epochs[0]
-            selected = [p for p in reconstruct_photos if p["epoch"] == epoch]
+            selected = [p for p in reconstruct_photos if object_pass(p) == epoch]
             if len(selected) < 3:
-                raise ReplicaError("At least three reconstruction photos in the selected epoch are required")
+                raise ReplicaError("At least three reconstruction photos in the selected object pass are required")
             run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8]
             directory = project_path(self.root, project_id) / "runs" / run_id
             directory.mkdir(parents=True)
@@ -777,8 +843,8 @@ class ReplicaStore:
                    "registeredCount": 0, "unregisteredPhotoIds": [], "commands": [], "cameras": [], "scale": {"status": "unscaled", "metersPerUnit": None},
                    "selectedPhotoIds": [p["id"] for p in selected], "heldoutPhotoIds": [p["id"] for p in project["photos"] if p["role"] == "holdout"],
                    "maxImageSize": max_image_size, "warnings": [
-                       "Metric scale is unknown until a measured distance is linked to two mesh points.",
-                       "Photogrammetry estimates/refines calibration and camera poses; ARCore evidence is retained but is not treated as exact JPEG calibration.",
+                       "Metric scale comes from phone tracking when the fit is good (an estimate, typically within a few percent); a ruler measurement linked to two mesh points overrides it.",
+                       "Photogrammetry estimates/refines calibration and camera poses; ARCore poses are used only for the scale estimate, not as JPEG calibration.",
                        "Holdout images are excluded from reconstruction and texture generation; their poses have not been independently localized.",
                        "Poisson meshing can smooth details and infer surfaces across gaps. Such surfaces are not measured.",
                        "Texture exposure/colour comes from photographs and is not a calibrated material measurement.",
@@ -826,7 +892,7 @@ class ReplicaStore:
             run.update(status="running", stage="verify-originals", updatedAt=now())
             write_json(directory / "result.json", run)
             manifest, all_photos, _, _, _ = validate_capture(project / "original")
-            photos = [p for p in all_photos if p["role"] == "reconstruct" and p["epoch"] == run["epoch"]]
+            photos = [p for p in all_photos if p["role"] == "reconstruct" and object_pass(p) == run["epoch"]]
             probe = doctor(self.engine, self.root)
             run["engine"] = probe["colmap"]
             if not probe["colmap"]["available"] or probe["colmap"]["errors"]:
@@ -872,6 +938,9 @@ class ReplicaStore:
                 raise ReplicaError("Fewer than three source images registered into the model")
             if run["unregisteredPhotoIds"]:
                 run["warnings"].append(f"{len(run['unregisteredPhotoIds'])} reconstruction images did not register. Review coverage before accepting the result.")
+            run["phoneScale"] = phone_scale(photos, original_cameras)
+            if run["phoneScale"]["status"] == "poor":
+                run["warnings"].append("Phone tracking and the photo reconstruction disagree; the phone scale estimate is not used. Set scale with a ruler measurement.")
             command("undistort", ["image_undistorter", "--image_path", images, "--input_path", model, "--output_path", dense,
                                    "--output_type", "COLMAP", "--max_image_size", run["maxImageSize"], "--log_target", "stderr", "--log_color", "0"])
             dense_text = directory / "dense-cameras"
@@ -959,7 +1028,8 @@ class ReplicaStore:
             directory = project / "runs" / run["id"]
             run.update(status="running", stage="resume-copy", engine=doctor(self.engine, self.root)["colmap"],
                        registeredCount=previous["registeredCount"], unregisteredPhotoIds=previous.get("unregisteredPhotoIds", []),
-                       cameras=previous.get("cameras", []), originalCameras=previous.get("originalCameras", []))
+                       cameras=previous.get("cameras", []), originalCameras=previous.get("originalCameras", []),
+                       phoneScale=previous.get("phoneScale"))
             run["resumedFrom"] = {"runId": previous["id"], "fusedSha256": sha256(source / "dense" / "fused.ply"),
                                   "databaseSha256": sha256(source / "database.db"), "sourceError": previous.get("error"),
                                   "skippedStages": ["features", "matching", "mapping", "undistort", "stereo", "fusion"]}
@@ -1034,7 +1104,7 @@ def evidence(store, project_id):
                 x, y = (index % 4)*320, (index // 4)*270
                 sheet.paste(display, (x+(320-display.width)//2, y))
                 draw.text((x+8, y+235), f"{photo['id']} | {photo['role']} | {photo['width']}x{photo['height']}", fill="white")
-                draw.text((x+8, y+252), photo["epoch"][:35], fill="#aac0d8")
+                draw.text((x+8, y+252), object_pass(photo)[:35], fill="#aac0d8")
         filename = f"contact-sheet-{start//24+1:03}.jpg"
         sheet.save(directory / filename, quality=90)
         sheet_urls.append(asset_url(project_id, (directory / filename).relative_to(path).as_posix()))

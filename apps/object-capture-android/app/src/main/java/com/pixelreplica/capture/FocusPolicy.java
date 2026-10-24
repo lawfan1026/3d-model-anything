@@ -61,6 +61,16 @@ public final class FocusPolicy {
         return null;
     }
 
+    /**
+     * True when the still reports a stationary lens at the locked focus distance. The Pixel 8 reports
+     * PASSIVE_SCAN in final still results even then, so that state alone is recorded but not alarming.
+     */
+    public static boolean lensHeld(Sample locked,Sample actual) {
+        return locked!=null && actual!=null && Integer.valueOf(0).equals(actual.lensState())
+                && locked.diopters()!=null && actual.diopters()!=null
+                && Math.abs(locked.diopters()-actual.diopters())<=MAX_DIOPTER_CHANGE;
+    }
+
     /** A still can lose focus after the pre-capture gate. Preserve it with an explicit retake warning. */
     public static String stillWarning(Sample expected,Sample actual) {
         if(expected==null || actual==null) return "Final still focus metadata is unavailable. Inspect the full-size photo and retake if soft.";

@@ -37,6 +37,8 @@ final class ScanCamera implements GLSurfaceView.Renderer {
         void status(String text, boolean ready);
         void saved(String id);
         void error(String text);
+        /** Large on-screen instruction plus a one-line progress summary. */
+        void guide(String instruction, String summary);
     }
     private final Activity activity;
     private final ScanStore store;
@@ -49,6 +51,11 @@ final class ScanCamera implements GLSurfaceView.Renderer {
     private final PoseHistory poses = new PoseHistory();
     private final CaptureState state = new CaptureState();
     private final FocusPolicy focus = new FocusPolicy();
+    final OrbitCoverage coverage = new OrbitCoverage();
+    private volatile OrbitCoverage.View currentView;
+    private volatile OrbitCoverage.Need currentNeed = OrbitCoverage.Need.OFF_DIAL;
+    private volatile String objectPass;
+    private volatile boolean dialRestarted;
     private final Object lifecycle = new Object();
     private volatile Session ar;
     private SharedCamera shared;
@@ -83,6 +90,7 @@ final class ScanCamera implements GLSurfaceView.Renderer {
                                  int width, int height, String tracking, boolean stable) {}
     private static final class Pending {
         final String epoch, role;
+        String objectPass;
         final FrameEvidence trigger;
         final CaptureQuality previewQuality;
         final boolean cpuSource, freezeRequested;
@@ -104,7 +112,7 @@ final class ScanCamera implements GLSurfaceView.Renderer {
         CameraDevice originDevice;
         SharedCamera originShared;
         volatile boolean waitingForLock, cancelFinished;
-        FocusPolicy.Sample startFocusResult, lockedFocus, cancelFocusResult;
+        FocusPolicy.Sample startFocusResult, lockedFocus, cancelFocusResult, finalFocus;
         Long startRequestedElapsedNs, cancelRequestedElapsedNs;
         Integer startReportedTrigger, cancelReportedTrigger, requestedControlMode, repeatingCaptureIntent;
         Integer startReportedControlMode,startReportedIntent,cancelReportedControlMode,cancelReportedIntent;
@@ -118,6 +126,7 @@ final class ScanCamera implements GLSurfaceView.Renderer {
 
     ScanCamera(Activity activity, ScanStore store, Listener listener, boolean cpuFallback) {
         this.activity = activity; this.store = store; this.listener = listener; this.cpuFallback = cpuFallback;
+        objectPass = store.objectPass(); coverage.reset(epoch);
         cameraThread.start(); handler = new Handler(cameraThread.getLooper());
         view = new GLSurfaceView(activity); view.setEGLContextClientVersion(2);
         view.setPreserveEGLContextOnPause(true); view.setRenderer(this);
@@ -126,6 +135,7 @@ final class ScanCamera implements GLSurfaceView.Renderer {
 
     private static String epoch() { return "pass-" + UUID.randomUUID(); }
     boolean isPending() { return state.pending(); }
+    OrbitCoverage.View currentView() { return currentView; }
     void setAutoCapture(boolean enabled) { autoCapture = enabled; }
     void setHoldout(boolean enabled) { holdout = enabled; }
     void setFreezeColor(boolean enabled) { freezeColor = enabled; fixedControls = enabled ? lastResult : null; }
@@ -146,7 +156,10 @@ final class ScanCamera implements GLSurfaceView.Renderer {
 
     void newEpoch() {
         if (state.pending()) { fail("Wait for the current photo before starting a new pass."); return; }
-        pause(); epoch = epoch(); poses.clear(); previousPose = null; evidence = null; stableFrames = 0; resume();
+        try { objectPass = store.startNewPass(); }
+        catch (Exception error) { fail("Cannot start a new pass: " + error.getMessage()); return; }
+        pause(); epoch = epoch(); poses.clear(); previousPose = null; evidence = null; stableFrames = 0;
+        coverage.reset(epoch); dialRestarted = false; resume();
     }
 
     private void closePlatform() {
@@ -159,6 +172,9 @@ final class ScanCamera implements GLSurfaceView.Renderer {
         if (jpegReader != null) { jpegReader.close(); jpegReader = null; }
         if (ar != null) { ar.close(); ar = null; }
         epoch = epoch(); poses.clear(); evidence = null; previousPose = null; stableFrames = 0;
+        // Headings from the old tracking world cannot be compared with the next one.
+        if (coverage.snapshot().photos() > 0) dialRestarted = true;
+        coverage.reset(epoch); currentView = null;
         focus.clear(); lastResult = null; fixedControls = null;
         releasingFocus=false; focusResetFailed=false; focusResetAfterSensorNs=0;
         Pending shot = pending;
@@ -288,6 +304,7 @@ final class ScanCamera implements GLSurfaceView.Renderer {
         if (!state.begin()) return;
         FrameEvidence current = evidence;
         Pending shot = new Pending(epoch, holdout ? "holdout" : "reconstruct", current,quality,cpuFallback,freezeColor,cameraId,characteristics);
+        shot.objectPass = objectPass;
         shot.requestedElapsedNs = SystemClock.elapsedRealtimeNanos();
         shot.lockSequence=new FocusLockSequence(shot.requestedElapsedNs);
         shot.originAr=ar; shot.originCaptures=captures; shot.originDevice=device; shot.originShared=shared;
@@ -463,8 +480,8 @@ final class ScanCamera implements GLSurfaceView.Renderer {
                 @Override public void onCaptureCompleted(CameraCaptureSession s, CaptureRequest r, TotalCaptureResult result) {
                     if (pending != shot || r.getTag()!=shot) return;
                     shot.result = result;
-                    shot.focusWarning=FocusPolicy.stillWarning(shot.lockedFocus,
-                            focusSample(r,result,SystemClock.elapsedRealtimeNanos()));
+                    shot.finalFocus=focusSample(r,result,SystemClock.elapsedRealtimeNanos());
+                    shot.focusWarning=FocusPolicy.stillWarning(shot.lockedFocus,shot.finalFocus);
                     releaseFocus(shot,"still-completed");
                     attachJpeg(shot);
                 }
@@ -512,10 +529,17 @@ final class ScanCamera implements GLSurfaceView.Renderer {
             try {
                 JSONObject record = observation(shot, pose, captureQuality);
                 String id = store.commit(shot.jpeg, record);
+                if (shot.role.equals("reconstruct")) {
+                    // Place the photo on the dial where the JPEG was exposed, not where Capture was pressed.
+                    float[] at = pose.sample() != null ? pose.sample().matrix() : shot.trigger != null ? shot.trigger.matrix() : null;
+                    if (coverage.add(shot.epoch, at)) dialRestarted = false;
+                }
                 activity.runOnUiThread(() -> {
                     listener.saved(id);
-                    if(shot.focusWarning!=null) listener.error("Photo "+id+" saved with a focus warning. "+shot.focusWarning);
-                    else listener.error("Photo saved. Check fine detail in Review before continuing.");
+                    // The full warning stays in photos.json; only a moved lens is worth interrupting the scan.
+                    boolean alarming=shot.focusWarning!=null && (shot.cpuSource || !FocusPolicy.lensHeld(shot.lockedFocus,shot.finalFocus));
+                    if(alarming) listener.error("Photo "+Integer.parseInt(id)+" may be soft: "+shot.focusWarning);
+                    else listener.error("Saved photo "+Integer.parseInt(id)+".");
                 });
             } catch (Exception error) { fail("Photo was not saved: " + error.getMessage()); }
             finally { if (pending == shot) pending = null; state.finish(); }
@@ -523,7 +547,7 @@ final class ScanCamera implements GLSurfaceView.Renderer {
     }
 
     private JSONObject observation(Pending shot, PoseHistory.Match match, CaptureQuality captureQuality) throws Exception {
-        JSONObject record = new JSONObject().put("epoch", shot.epoch).put("role", shot.role)
+        JSONObject record = new JSONObject().put("epoch", shot.epoch).put("objectPass", shot.objectPass).put("role", shot.role)
                 .put("timestampNs", Long.toString(shot.imageTimestamp)).put("width", shot.width).put("height", shot.height)
                 .put("cameraId", shot.cameraId).put("poseStatus", match.status())
                 .put("poseDeltaNs", match.deltaNs() == null ? JSONObject.NULL : Long.toString(match.deltaNs()))
@@ -667,6 +691,7 @@ final class ScanCamera implements GLSurfaceView.Renderer {
                 boolean stable = previousPose != null && motionSmall(previousPose, matrix) && tracking;
                 stableFrames = stable ? stableFrames + 1 : 0;
                 previousPose = matrix.clone(); previousFrameTime = time;
+                currentView = tracking ? OrbitCoverage.view(matrix) : null;
                 FrameEvidence now = new FrameEvidence(time, epoch, matrix, new float[]{focal[0],focal[1],center[0],center[1]}, dimensions[0], dimensions[1], camera.getTrackingState().name(), stableFrames >= 8);
                 evidence = now;
                 poses.add(new PoseHistory.Sample(time, matrix, now.intrinsics(), dimensions[0], dimensions[1], epoch, tracking));
@@ -685,7 +710,10 @@ final class ScanCamera implements GLSurfaceView.Renderer {
                         }
                     } catch (com.google.ar.core.exceptions.NotYetAvailableException ignored) { }
                 }
-                if (state.autoReady(time, tracking, now.stable(), quality, autoCapture) && !holdout) activity.runOnUiThread(this::capture);
+                // Automatic photos only for viewpoints the dial still needs; standing still adds no duplicates.
+                currentNeed = tracking ? coverage.need(epoch, matrix) : OrbitCoverage.Need.OFF_DIAL;
+                boolean newView = currentNeed == OrbitCoverage.Need.NEW_VIEW;
+                if (newView && !holdout && state.autoReady(time, tracking, now.stable(), quality, autoCapture)) activity.runOnUiThread(this::capture);
                 long ms = System.currentTimeMillis();
                 if (ms - lastStatusMs > 350) {
                     lastStatusMs = ms;
@@ -694,16 +722,35 @@ final class ScanCamera implements GLSurfaceView.Renderer {
                     FocusPolicy.Readiness focusStatus=focus.readiness(SystemClock.elapsedRealtimeNanos());
                     Pending waiting=pending;
                     String focusText=releasingFocus?"Resetting autofocus…":waiting!=null && waiting.waitingForLock?"Locking focus… hold still":waiting!=null && waiting.waitingForFocus?"Waiting for focus… hold still":focusStatus.reason();
-                    String message = resolution + "  •  " + now.tracking() + "\nPreview sharpness " + sharp + "  •  " + (now.stable() ? "steady" : "hold still")
-                            + "\nFocus: "+focusText
-                            + "\n" + store.count() + " photos  •  " + (freezeColor ? "still colour freeze requested; actual state saved" : "automatic colour; actual state saved");
-                    activity.runOnUiThread(() -> listener.status(message, true));
+                    String message = resolution + "  •  " + now.tracking() + "  •  sharpness " + sharp + (now.stable() ? "  •  steady" : "")
+                            + "\nFocus: " + focusText + (freezeColor ? "  •  colour lock requested" : "");
+                    String instruction = guidance(tracking, camera.getTrackingFailureReason());
+                    OrbitCoverage.Snapshot dial = coverage.snapshot();
+                    String summary = objectPass.replace("pass-", "Pass ") + "  •  " + store.count() + " photos  •  dial "
+                            + Math.round(dial.fraction() * 100) + "% covered";
+                    activity.runOnUiThread(() -> { listener.status(message, true); listener.guide(instruction, summary); });
                 }
             } catch (Exception error) {
                 long ms = System.currentTimeMillis();
                 if (ms - lastStatusMs > 2000) { lastStatusMs = ms; fail("Viewfinder: " + error.getMessage()); }
             }
         }
+    }
+
+    private String guidance(boolean tracking, TrackingFailureReason reason) {
+        if (!tracking) return switch (reason == null ? TrackingFailureReason.NONE : reason) {
+            case EXCESSIVE_MOTION -> "Moving too fast. Slow down";
+            case INSUFFICIENT_LIGHT -> "Too dark. Add more light";
+            case INSUFFICIENT_FEATURES -> "Not enough detail in view. Include the table or a textured background";
+            case CAMERA_UNAVAILABLE -> "Camera busy. Close other camera apps";
+            default -> "Move the phone slowly to start tracking";
+        };
+        if (pending != null || releasingFocus) return "Hold still…";
+        if (holdout) return "Holdout is on: tap Capture for a few check photos";
+        OrbitCoverage.Snapshot dial = coverage.snapshot();
+        if (dialRestarted && dial.photos() == 0) return "Camera restarted, so the dial starts over. Earlier photos are kept";
+        String hint = OrbitCoverage.hint(dial, currentView, currentNeed);
+        return !autoCapture && hint.startsWith("New view") ? "New view: tap Capture" : hint;
     }
 
     private static boolean motionSmall(float[] a, float[] b) {

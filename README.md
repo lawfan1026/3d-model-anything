@@ -12,7 +12,7 @@ The app records the evidence. The skill guides an agent through measurement, mod
 
 ## Run the viewer
 
-For Android object scanning, start with [Pixel Replica for Pixel 8](docs/pixel-replica-guide.md). It adds a native JPEG capture app, USB scan-bundle transfer, local COLMAP photogrammetry, source-photo comparisons, measured scale checks and a local agent review packet. On Windows, run `Start-PixelReplica.cmd` for the object workspace. This prototype needs a real Pixel capture and physical measurements before its accuracy can be established.
+For Android object scanning, start with [testing Pixel Replica on your phone](docs/pixel-phone-testing.md), then [Pixel Replica for Pixel 8](docs/pixel-replica-guide.md). It adds a native JPEG capture app, USB scan-bundle transfer, local COLMAP photogrammetry, source-photo comparisons, measured scale checks and a local agent review packet. On Windows, run `Start-PixelReplica.cmd` for the object workspace. This prototype needs a real Pixel capture and physical measurements before its accuracy can be established.
 
 Use Node.js 22.12+ (or a newer supported release).
 

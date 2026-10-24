@@ -10,7 +10,10 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.*;
@@ -32,7 +35,7 @@ public final class MainActivity extends ComponentActivity {
     private ScanCamera scanner;
     private boolean resumed;
     private LinearLayout root;
-    private TextView cameraStatus, warning;
+    private TextView cameraStatus, warning, instruction, summary;
     private File exportFile;
     private boolean reviewing;
     private static final int BLUE = Color.rgb(80,175,255);
@@ -70,64 +73,88 @@ public final class MainActivity extends ComponentActivity {
     }
     private void home() {
         stopScanner(); reviewing = false; base("Pixel Replica");
-        root.addView(text("Capture an object. Preserve the evidence.", 16));
+        root.addView(text("3D-scan an object by walking around it with your phone.", 16));
         ScrollView scroll = new ScrollView(this); LinearLayout body = column(); scroll.addView(body);
         root.addView(scroll, new LinearLayout.LayoutParams(-1,0,1));
-        body.addView(text("First scan: LEGO car\n\nKeep the car still and move the phone around it. Use bright, diffuse light. Fill the centre guide with the car, with some background around it. Make overlapping low, middle and high passes. Avoid flash and digital zoom.",16));
-        body.addView(text("Include a ruler and a neutral colour card in setup photos. Measure the car independently. Glossy, black and transparent parts can still be difficult to reconstruct.",15));
+        body.addView(text("How to scan", 21));
+        body.addView(text("1.  Put the object on a matte table in bright, even light. No flash or harsh sun. A patterned placemat or newspaper underneath helps tracking.\n\n"
+                + "2.  Tap Start, then move the phone slowly until tracking starts.\n\n"
+                + "3.  Walk slowly around the object, keeping it in the centre circle. Photos are taken automatically: when the screen says \"New view: pause here\", stop for a second.\n\n"
+                + "4.  Fill the dial: a low lap at the object's height, a middle lap looking down, then a high lap. The yellow sector is the view you are on; green sectors are done.\n\n"
+                + "5.  Don't touch or move the object. To scan the bottom, tap New pass, turn it over and do it again.\n\n"
+                + "6.  Tap Done, then Save capture ZIP and copy it to your laptop for 3D reconstruction.",15));
         EditText name = input("Object name", "LEGO car", false); body.addView(name);
-        CheckBox fallback = check("Use lower-resolution CPU fallback (diagnostic)"); body.addView(fallback);
-        button(body, "Start new capture", () -> {
+        CheckBox fallback = check("Low-resolution CPU fallback (diagnostic only)"); fallback.setTextSize(13);
+        button(body, "Start scanning", () -> {
             try {
                 JSONObject device = new JSONObject().put("manufacturer",Build.MANUFACTURER).put("model",Build.MODEL)
-                        .put("android",Build.VERSION.RELEASE).put("sdk",Build.VERSION.SDK_INT).put("appVersion","0.1.2");
+                        .put("android",Build.VERSION.RELEASE).put("sdk",Build.VERSION.SDK_INT).put("appVersion",appVersion());
                 store = ScanStore.create(new File(getFilesDir(),"sessions"),name.getText().toString(),device);
                 capture(fallback.isChecked());
             } catch (Exception e) { error("Cannot create session",e); }
         });
-        body.addView(text("Saved sessions",21));
+        body.addView(text("Saved scans",21));
         File[] sessions = new File(getFilesDir(),"sessions").listFiles(File::isDirectory);
-        if (sessions == null || sessions.length == 0) body.addView(text("Your captures stay on this phone until you save or share a ZIP.",15));
+        if (sessions == null || sessions.length == 0) body.addView(text("Scans stay on this phone until you save or share a ZIP.",15));
         else {
             Arrays.sort(sessions, Comparator.comparingLong(File::lastModified).reversed());
             for (File session : sessions) {
                 try {
                     ScanStore existing = ScanStore.open(session);
-                    button(body,existing.name() + " • " + existing.count() + " photos • " + existing.status(),() -> { store = existing; review(); });
+                    button(body,existing.name() + " • " + existing.count() + " photos",() -> { store = existing; review(); });
                 } catch (Exception ignored) { body.addView(text("A session needs recovery: " + session.getName(),13)); }
             }
         }
-        body.addView(text("No account. No cloud upload. Fine-detail, colour and size accuracy are not yet verified on your phone.",14));
+        body.addView(fallback);
+        body.addView(text("Version " + appVersion() + " • No account, no upload. Photos leave the phone only when you save or share them.",13));
     }
 
     private void capture(boolean fallback) {
         stopScanner(); reviewing = false; base(store.name());
-        cameraStatus = text("Starting camera…",14); root.addView(cameraStatus);
         FrameLayout viewfinder = new FrameLayout(this);
         root.addView(viewfinder,new LinearLayout.LayoutParams(-1,0,1));
+        summary = text("",15); root.addView(summary);
+        cameraStatus = text("Starting camera…",11); cameraStatus.setTextColor(Color.rgb(150,165,185)); root.addView(cameraStatus);
+        warning = text("",13); warning.setTextColor(Color.rgb(255,213,79)); root.addView(warning);
         scanner = new ScanCamera(this,store,new ScanCamera.Listener() {
             @Override public void status(String status, boolean ready) { if (cameraStatus != null && !reviewing) cameraStatus.setText(status); }
-            @Override public void saved(String id) { if (!reviewing) toast("Photo " + id + " saved"); }
+            @Override public void saved(String id) {
+                if (reviewing || scanner == null) return;
+                scanner.view.performHapticFeedback(Build.VERSION.SDK_INT >= 30 ? HapticFeedbackConstants.CONFIRM : HapticFeedbackConstants.VIRTUAL_KEY);
+            }
             @Override public void error(String status) { if (warning != null && !reviewing) warning.setText(status); }
+            @Override public void guide(String text, String progress) {
+                if (reviewing) return;
+                if (instruction != null) instruction.setText(text);
+                if (summary != null) summary.setText(progress);
+            }
         },fallback);
         viewfinder.addView(scanner.view,new FrameLayout.LayoutParams(-1,-1));
-        View guide = new View(this); android.graphics.drawable.GradientDrawable outline = new android.graphics.drawable.GradientDrawable();
-        outline.setColor(Color.TRANSPARENT); outline.setStroke(dp(2),Color.argb(180,80,175,255)); outline.setCornerRadius(dp(12)); guide.setBackground(outline);
-        FrameLayout.LayoutParams guideParams = new FrameLayout.LayoutParams(-1,-1); guideParams.setMargins(dp(22),dp(24),dp(22),dp(24)); viewfinder.addView(guide,guideParams);
-        warning = text("Keep the object still. The outline is a framing guide, not a surface-coverage measurement.",13); root.addView(warning);
+        // Autofocus meters the centre of the frame, so the object belongs in this circle.
+        View reticle = new View(this); GradientDrawable ring = new GradientDrawable(); ring.setShape(GradientDrawable.OVAL);
+        ring.setColor(Color.TRANSPARENT); ring.setStroke(dp(2),Color.argb(200,255,255,255)); reticle.setBackground(ring);
+        viewfinder.addView(reticle,new FrameLayout.LayoutParams(dp(56),dp(56),Gravity.CENTER));
+        instruction = text("Move the phone slowly to start tracking",20); instruction.setTypeface(Typeface.DEFAULT_BOLD);
+        instruction.setTextColor(Color.WHITE); instruction.setGravity(Gravity.CENTER); instruction.setBackgroundColor(Color.argb(150,8,12,20));
+        instruction.setPadding(dp(12),dp(10),dp(12),dp(10));
+        viewfinder.addView(instruction,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP));
+        CoverageDialView dial = new CoverageDialView(this); dial.bind(scanner.coverage,scanner::currentView);
+        FrameLayout.LayoutParams dialParams = new FrameLayout.LayoutParams(dp(176),dp(176),Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        dialParams.bottomMargin = dp(6); viewfinder.addView(dial,dialParams);
         LinearLayout switches = row();
-        CheckBox automatic = check("Auto when steady"); automatic.setTextSize(13); switches.addView(automatic,new LinearLayout.LayoutParams(0,-2,1));
+        CheckBox automatic = check("Auto capture"); automatic.setTextSize(13); automatic.setChecked(true); switches.addView(automatic,new LinearLayout.LayoutParams(0,-2,1));
         CheckBox holdout = check("Holdout photo"); holdout.setTextSize(13); switches.addView(holdout,new LinearLayout.LayoutParams(0,-2,1)); root.addView(switches);
+        scanner.setAutoCapture(true);
         automatic.setOnCheckedChangeListener((button, checked) -> { if (scanner != null) scanner.setAutoCapture(checked); });
-        holdout.setOnCheckedChangeListener((button, checked) -> { if (scanner != null) scanner.setHoldout(checked); if (checked) warning.setText("Holdouts are reserved for comparison and excluded from reconstruction. Capture a few useful viewpoints."); });
-        CheckBox freeze = check("Request fixed still white balance (after warm-up)"); freeze.setTextSize(13); root.addView(freeze);
+        holdout.setOnCheckedChangeListener((button, checked) -> { if (scanner != null) scanner.setHoldout(checked); if (checked) warning.setText("Holdout photos are kept out of the 3D model and used to check it. Take 2–4 from different sides."); });
+        CheckBox freeze = check("Lock colour (white balance) for consistent textures"); freeze.setTextSize(13); root.addView(freeze);
         freeze.setOnCheckedChangeListener((button, checked) -> { if (scanner != null) scanner.setFreezeColor(checked); });
         LinearLayout actions = row(); root.addView(actions);
         button(actions,"Capture",() -> { if (scanner != null) scanner.capture(); });
-        button(actions,"New pass",() -> new AlertDialog.Builder(this).setTitle("Start a separate pass?")
-                .setMessage("Use a new pass after moving or turning over the car. Previous photos remain. The laptop must align separate passes; their camera coordinates are not the same world.")
+        button(actions,"New pass",() -> new AlertDialog.Builder(this).setTitle("Moved or flipped the object?")
+                .setMessage("Start a new pass when the object has been moved or turned over, for example to scan its underside. Photos so far are kept as their own pass.")
                 .setPositiveButton("New pass",(d,w) -> { if (scanner != null) scanner.newEpoch(); }).setNegativeButton("Cancel",null).show());
-        button(actions,"Review",() -> {
+        button(actions,"Done",() -> {
             if (scanner != null && scanner.isPending()) { toast("Wait for the photo to finish saving."); return; }
             try { store.complete(); review(); } catch (Exception e) { error("Cannot finish",e); }
         });
@@ -139,10 +166,10 @@ public final class MainActivity extends ComponentActivity {
         ScrollView scroll = new ScrollView(this); LinearLayout body = column(); scroll.addView(body); root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
         try {
             JSONArray photos = store.photos(); int holdouts = 0;
-            Set<String> epochs = new HashSet<>();
-            for (int i=0;i<photos.length();i++) { JSONObject photo = photos.getJSONObject(i); epochs.add(photo.getString("epoch")); if (photo.getString("role").equals("holdout")) holdouts++; }
-            body.addView(text(photos.length() + " photos • " + holdouts + " holdouts\n" + epochs.size() + " coordinate passes • " + store.measurementCount() + " measurements",18));
-            body.addView(text("Review for blur, gaps, reflections and missing underside views. Photo count does not establish complete geometry or accurate colour.",15));
+            Set<String> passes = new HashSet<>();
+            for (int i=0;i<photos.length();i++) { JSONObject photo = photos.getJSONObject(i); passes.add(photo.optString("objectPass",photo.getString("epoch"))); if (photo.getString("role").equals("holdout")) holdouts++; }
+            body.addView(text(photos.length() + " photos • " + holdouts + " holdouts\n" + passes.size() + (passes.size()==1?" object pass":" object passes") + " • " + store.measurementCount() + " measurements",18));
+            body.addView(text("Tap a thumbnail to check sharpness. Retake blurry or glary views with Capture more photos.",15));
             HorizontalScrollView thumbnails = new HorizontalScrollView(this); LinearLayout strip = row(); thumbnails.addView(strip); body.addView(thumbnails);
             for (int i=Math.max(0,photos.length()-12);i<photos.length();i++) {
                 JSONObject photo = photos.getJSONObject(i); File file = new File(store.directory,photo.getString("file"));
@@ -157,9 +184,12 @@ public final class MainActivity extends ComponentActivity {
         } catch (Exception e) { error("Cannot read session",e); }
         button(body,"Add physical measurement",this::measurementDialog);
         button(body,"Capture more photos",() -> capture(false));
+        button(body,"Delete this scan",() -> new AlertDialog.Builder(this).setTitle("Delete " + store.name() + "?")
+                .setMessage("Its photos are removed from this phone. ZIPs you already saved or shared are not affected.")
+                .setPositiveButton("Delete",(d,w) -> { deleteTree(store.directory); store = null; home(); }).setNegativeButton("Cancel",null).show());
         button(body,"Save capture ZIP…",() -> export(false));
         button(body,"Share capture ZIP…",() -> export(true));
-        body.addView(text("Save the ZIP to Downloads, then connect the phone to your laptop by USB and choose File transfer. Copy the complete ZIP. Keep it intact for import.\n\nThe laptop reconstructs geometry and textures from the photos. The LLM uses tools and a review packet; it does not replace the measurements or invent missing surfaces.",15));
+        body.addView(text("Get the ZIP to your laptop: Save it to Downloads and copy it over USB (choose File transfer on the phone), or Share it with Quick Share or Google Drive. Keep the ZIP unchanged and import it in Pixel Replica on the laptop.\n\nMeasurements are optional: measure the real object with a ruler (for example overall length) so the laptop can check the model's size.",15));
         button(body,"Home",this::home);
     }
 
@@ -218,6 +248,15 @@ public final class MainActivity extends ComponentActivity {
         });
     }
 
+    private String appVersion() {
+        try { return getPackageManager().getPackageInfo(getPackageName(),0).versionName; }
+        catch (Exception unknown) { return "unknown"; }
+    }
+    private static void deleteTree(File file) {
+        File[] children = file.listFiles();
+        if (children != null) for (File child : children) deleteTree(child);
+        file.delete();
+    }
     private void stopScanner() { if (scanner != null) { scanner.close(); scanner=null; } }
     private void handleBack() {
         if (scanner != null && scanner.isPending()) { toast("Wait for the current photo to save."); return; }
